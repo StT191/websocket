@@ -1,0 +1,19 @@
+{
+  "name": "stt-websocket",
+  "version": "0.9.0",
+  "description": "WebSocket implementation in NodeJS",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/StT191/stt-websocket.git"
+  },
+  "author": "Stefan Tammer",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/StT191/stt-websocket/issues"
+  },
+  "homepage": "https://github.com/StT191/stt-websocket"
+}
