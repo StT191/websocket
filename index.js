@@ -29,11 +29,13 @@ function WebSocket(socket, server=false, settings={}) {
     client.socket = socket;
 
     client.server = server;
-    // client.request = null; // will be overwritter
+    client.request = null; // may be overwritten
+    client.response = null; // may be overwritten
+    client.protocol = ""; // may be overwritten
 
     client.maxMessage = settings.maxMessage || defaultMaxMessage;
     client.timeout = settings.timeout || defaultTimeout;
-    client.validateUTF8 = settings.validateUTF8;
+    client.validateUTF8 = settings.validateUTF8 || false;
 
     client.mask = (server) ? 0 : 1; // sets masking bit at each send
 
