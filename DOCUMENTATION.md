@@ -11,7 +11,7 @@
 * `settings` _\<Object>_
     * `maxMessage` _\<number>_ disconnect on receiving a message bigger than `maxMessage` (in bytes),
       default is `134217728` (128 MiB)
-    * `validateUTF8` _\<boolean>_ enable utf8-validation, default is `false`
+    * `validateUTF8` _\<boolean>_ enable utf8-validation, defaults to `true`
     * `timeout` _\<number>_  close pending connect or enforce pending close after timeout (in ms),
       default is `5000` (5 sec)
     * `protocol` _\<string[ ]>_ a list of sub-protocols for handshake
