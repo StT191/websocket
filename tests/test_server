@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+sudo service docker start
+
+sudo docker run -ti --rm=true \
+-v $(pwd)/fuzzingServer.json:/tmp/fuzzingclient.json \
+-v $(pwd)/server-report:/tmp/server-report \
+jrudolph/autobahn-testsuite-client
+
+
+sudo chown -R $USER:$USER server-report

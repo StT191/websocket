@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+# sudo service docker stop
+
+sudo systemctl stop docker

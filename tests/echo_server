@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+"use strict";
+
+const server = require("stt-websocket").createServer({validateUTF8: true});
+
+server.on("message", (msg, client)=>client.send(msg) );
+
+server.on("error", (e)=>console.log(e))
+
+server.listen(9001, ()=>console.log("port: 9001") );
+
+

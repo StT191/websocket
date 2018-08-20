@@ -231,6 +231,6 @@ const tests = {
 }
 
 
-Object.keys(tests).forEach(function (key, index) {
-    tests[key](()=>console.log("done", (index+1)+":", key));
+Object.entries(tests).forEach(function ([name, test], index) {
+    test(()=>console.log("done", (index+1)+":", name));
 });

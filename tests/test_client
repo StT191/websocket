@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+"use strict";
+
+const ws = require("stt-websocket");
+const USER = process.env.USER;
+
+ws.connect("ws://localhost:9001/getCaseCount", client => {
+    if (!client) return testCase(0);
+    client.once("message", msg => {
+        client.close();
+        testCase(+msg);
+        console.log(msg, "test cases");
+    });
+});
+
+
+function testCase(i) {
+    if (!i) {
+        process.stdout.write("\n");
+        finish();
+    }
+
+    else ws.connect(
+        "ws://localhost:9001/runCase?case="+i+"&agent="+USER,
+        {validateUTF8: true},
+        cl => {
+            if (!cl) return testCase(--i);
+            process.stdout.write(i+" ")
+            cl.on("message", msg=>cl.send(msg));
+            cl.on("close", testCase.bind(null, --i));
+        }
+    );
+}
+
+function finish() {
+    ws.connect("ws://localhost:9001/updateReports?agent="+USER, client => {
+        client.close();
+
+        var pcs = require("child_process").exec(`sudo chown -R ${USER}:${USER} client-report`, process.exit);
+        process.stdin.pipe(pcs);
+        pcs.stdout.pipe(process.stdout);
+        pcs.stderr.pipe(process.stderr);
+    });
+}

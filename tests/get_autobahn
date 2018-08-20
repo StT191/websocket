@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+sudo service docker start
+
+sudo docker pull jrudolph/autobahn-testsuite
+sudo docker pull jrudolph/autobahn-testsuite-client
+

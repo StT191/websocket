@@ -16,15 +16,17 @@ function bit(byte, pos) {
 const EventEmitter = require("events");
 const validUTF8 = require("./lib/validUTF8");
 
-const maxFrame = 281474976710655; // max 48 bit
+const maxFrame = 281474976710655; // max 48 bit (JavaScript limitation)
 const defaultMaxMessage = 134217728; // 128 MiB
 const defaultTimeout = 5000; // 5 sec
 
 
 
 // websocket client
-function WebSocket(socket, server=false, settings={}) {
+function WebSocket(socket, server=null, settings={}) {
     const client = this;
+
+    // sorting
 
     client.socket = socket;
 
@@ -35,14 +37,18 @@ function WebSocket(socket, server=false, settings={}) {
 
     client.maxMessage = settings.maxMessage || defaultMaxMessage;
     client.timeout = settings.timeout || defaultTimeout;
-    client.validateUTF8 = settings.validateUTF8 || false;
+    client.validateUTF8 = (settings.validateUTF8 === undefined) ? true : settings.validateUTF8;
 
     client.mask = (server) ? 0 : 1; // sets masking bit at each send
 
     socket.allowHalfOpen = false;
 
-    socket.on("error", error=>client.emit("error", error));
-    socket.once("close", function (had_error) {
+
+    // events
+
+    socket.on("error", error => client.emit("error", error));
+
+    socket.once("close", had_error => {
         client.state = 4; // closed
         client.closed = true;
         clearTimeout(socket.closeTimer);
@@ -75,7 +81,7 @@ function WebSocket(socket, server=false, settings={}) {
     head.size = 0;
 
 
-    socket.on("data", function (data) {
+    socket.on("data", data => {
         if (!frame.outstanding) {
             head.push(data);
             head.size += data.length;
@@ -256,7 +262,7 @@ function sendError(type, spec) {
         "frame": "frame limit is "+spec+" bytes as of rigth now ;)",
         "closed": "connection was closed"
     }[type]);
-    error.code = "ESEND";
+    Object.assign(error, {code: "ESEND", type});
     throw error;
     return false;
 }
@@ -281,6 +287,7 @@ const fragSize = 65535; // 65KiB - 1 bit = fragment size
 
 // frame funcion
 function Frame(data=Buffer.allocUnsafe(0), FIN=1, RSV=0, opcode=1, mask=1) {
+
     const parts = [Buffer.allocUnsafe(2)];
     parts[0][0] = 128*FIN + 16*RSV + opcode;
 
@@ -423,6 +430,7 @@ const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 // websocket server (pass to "upgrade" listener of a http server)
 function WebSocketServer(settings={}, onConnect=null) {
+
     if (typeof settings === "function") {
         onConnect = settings;
         settings = {}; // protocol, accept, timeout, maxMessage
@@ -469,17 +477,17 @@ function WebSocketServer(settings={}, onConnect=null) {
             client.request = request;
             client.protocol = protocol;
 
-            socket.once("close", () =>{
+            socket.once("close", () => {
                 server.clients.delete(client);
                 if (server.closed && !server.clients.size) server.emit("close");
             });
 
             socket._events.close.reverse(); // the preceding calls first
 
-            client.on("message", msg=>server.emit("message", msg, client));
-            client.on("pong", data=>server.emit("pong", data, client));
-            client.on("error", error=>server.emit("error", error, client));
-            client.once("close", (code, reason)=>server.emit("clientClose", code, reason, client));
+            client.on("message", msg => server.emit("message", msg, client));
+            client.on("pong", data => server.emit("pong", data, client));
+            client.on("error", error => server.emit("error", error, client));
+            client.once("close", (code, reason) => server.emit("clientClose", code, reason, client));
 
             server.clients.add(client);
             server.emit("connect", client);
@@ -544,7 +552,7 @@ function createServer(settings={}, onConnect=null) {
 
     httpServer.on("upgrade", wsServer);
     httpServer.timeout = 0;
-    httpServer.on("error", error=>wsServer.emit("error", error)); // handle errors !!!
+    httpServer.on("error", error => wsServer.emit("error", error)); // handle errors !!!
     wsServer[tls ? "https" : "http"] = httpServer;
 
     wsServer.listen = (...args) => {
@@ -552,6 +560,7 @@ function createServer(settings={}, onConnect=null) {
         httpServer.listen(...args);
         return wsServer;
     }
+
     wsServer.close = () => {
         httpServer.close();
         WebSocketServer.prototype.close.call(wsServer);
@@ -618,7 +627,7 @@ function connect(url, settings={}, callback) {
         }
         else {
             request.removeAllListeners();
-            callback(client);
+            callback(client, null);
         }
     }
 
