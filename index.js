@@ -62,7 +62,7 @@ function WebSocket(socket, server=null, settings={}) {
     });
 
 
-    client.on("error", e=>{}); // prevents crashing if unhandled
+    client.on("error", e => {}); // prevents crashing if unhandled
 
     client.state = 1; // connected
     client.closed = false;
@@ -74,6 +74,7 @@ function WebSocket(socket, server=null, settings={}) {
 
     // fragmented frame
     var frame = [];
+    frame.outstanding = 0;
 
     // fragmented head
     var head = [];
@@ -502,6 +503,7 @@ function WebSocketServer(settings={}, onConnect=null) {
 
     server.settings = settings;
     server.clients = new Set([]);
+    server.closed = false;
 
     // server.on("error", e=>{}); // ???? prevents blocking if unhandled
 
@@ -649,7 +651,7 @@ function connect(url, settings={}, callback) {
             response.statusCode === 101 &&
             headers["upgrade"].toLowerCase() === "websocket" &&
             headers["connection"] &&
-            headers["connection"].includes("Upgrade") &&
+            headers["connection"].toLowerCase().includes("upgrade") &&
             headers["sec-websocket-accept"] === match &&
             !headers["sec-websocket-extensions"] &&
             ( !(protocol = headers["sec-websocket-protocol"]) ||
