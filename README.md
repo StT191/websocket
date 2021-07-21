@@ -1,4 +1,4 @@
-# stt-websocket
+# websocket
 WebSocket implementation in NodeJS
 
 Work in progress.
