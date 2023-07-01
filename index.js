@@ -16,10 +16,13 @@ function bit(byte, pos) {
 const EventEmitter = require("events");
 const validUTF8 = require("./lib/validUTF8");
 
-const maxFrame = 281474976710655; // max 48 bit (JavaScript limitation)
+const maxFrame = 281474976710655; // 48 bit
 const defaultMaxMessage = 134217728; // 128 MiB
 const defaultTimeout = 5000; // 5 sec
 
+
+// state flags
+const CONNECTED = 1, CLOSING = 2, DOWN = 3, CLOSED = 4;
 
 
 // websocket client
@@ -49,24 +52,19 @@ function WebSocket(socket, server=null, settings={}) {
     socket.on("error", error => client.emit("error", error));
 
     socket.once("close", had_error => {
-        client.state = 4; // closed
-        client.closed = true;
+        client.state = CLOSED;
         clearTimeout(socket.closeTimer);
         message = null; // free some ram
         frame = null;
         head = null;
-        socket.removeAllListeners();
         client.statusCode = client.statusCode || 1006;
         client.emit("close", client.statusCode, had_error || client.closeReason);
-        client.removeAllListeners();
     });
 
 
-    client.on("error", e => {}); // prevents crashing if unhandled
+    client.on("error", () => {}); // prevents crashing if unhandled
 
-    client.state = 1; // connected
-    client.closed = false;
-
+    client.state = CONNECTED;
 
     // fragmented message
     var message = [];
@@ -93,7 +91,7 @@ function WebSocket(socket, server=null, settings={}) {
 
 
     function onFrameHead(data) {
-        if (client.state >= 3) return; // should never occour
+        if (client.state >= DOWN) return; // should never occour
 
         const mask = bit(data[1], 0);
         if (mask !== client.mask^1) return recvError(client, "mask");
@@ -170,7 +168,7 @@ function WebSocket(socket, server=null, settings={}) {
 
             switch(opcode) {
                 case 0: /* "continue" */ case 1: /* "text" */ case 2: // "binary"
-                    if (opcode===1) message.text = true;
+                    if (opcode === 1) message.text = true;
                     //if (message.text && client.validateUTF8 && !validUTF8(load)) return recvError(client, "utf8");
                     message.push(load);
                     message.size += load.length;
@@ -205,8 +203,8 @@ function WebSocket(socket, server=null, settings={}) {
                     }
                     client.closeReason = closeReason.toString();
 
-                    if (client.state === 1) client.close(client.closeReason, statusCode);
-                    client.state = 3;
+                    if (client.state === CONNECTED) client.close(client.closeReason, statusCode);
+                    client.state = DOWN;
                     socket.end();
                     socket.removeAllListeners("data");
                     timeout(client);
@@ -244,7 +242,14 @@ function recvError(client, type, spec) { // errors close the client connection
         // "statusCode": ["invalid statusCode code: "+spec, 1002]
     }[type];
 
-    client.close(e[0], e[1]); // only if close wasn't called before
+    if (client.state === CONNECTED) {
+        client.close(e[0], e[1]); // close as gracefully as possible
+    }
+    else { // or end socket
+        client.state = DOWN;
+        client.socket.end();
+        client.socket.removeAllListeners("data");
+    }
 
     const error = new Error(e[0]);
     Object.assign(error, {code: e[1], type});
@@ -259,13 +264,12 @@ function recvError(client, type, spec) { // errors close the client connection
 function sendError(type, spec) {
     const error = new Error({
         "ping": "ping payload exceeds 125 bytes",
-        "close": "close payload exceeds 123 bytes + status code",
+        "closing": "close payload exceeds 123 bytes + status code",
         "frame": "frame limit is "+spec+" bytes as of rigth now ;)",
         "closed": "connection was closed"
     }[type]);
     Object.assign(error, {code: "ESEND", type});
     throw error;
-    return false;
 }
 
 
@@ -294,9 +298,9 @@ function Frame(data=Buffer.allocUnsafe(0), FIN=1, RSV=0, opcode=1, mask=1) {
 
     const length = data.length;
 
-    if (length <= 125)
+    if (length <= 125) {
         parts[0][1] = 128*mask + length;
-
+    }
     else if (length <= 65535) {
         parts[0][1] = 128*mask + 126;
         parts.push(Buffer.allocUnsafe(2));
@@ -307,17 +311,20 @@ function Frame(data=Buffer.allocUnsafe(0), FIN=1, RSV=0, opcode=1, mask=1) {
         parts.push(Buffer.alloc(8));
         parts[1].writeUIntBE(length, 2, 6);
     }
-    else return sendError("frame", maxFrame); // !!!
+    else {
+        return sendError("frame", maxFrame);
+    }
 
     if (mask) {
         const key = crypto.randomBytes(4);
         const masked = Buffer.allocUnsafe(length);
-        let i;
-        for (i=0; i<length; i++) masked[i] = data[i] ^ key[i%4];
+        for (let i=0; i<length; i++) masked[i] = data[i] ^ key[i%4];
         parts.push(key);
         parts.push(masked);
     }
-    else parts.push(data);
+    else {
+        parts.push(data);
+    }
 
     return Buffer.concat(parts);
 }
@@ -345,26 +352,36 @@ function messagerize(data=Buffer.allocUnsafe(0)) {
 }
 
 
+// export State
+WebSocket.State = { CONNECTED, CLOSING, DOWN, CLOSED };
 
 // WebSocket methods and EventEmitter
 Object.assign(WebSocket.prototype, EventEmitter.prototype, {
 
     send: function (data, cb) { // cb returns on socket write
-        if (this.closed) sendError("closed");
+        if (this.state !== CONNECTED) return sendError("closed");
         data = messagerize(data);
 
-        if (data.length <= fragSize)
+        if (data.length <= fragSize) {
             return this.socket.write(Frame(data, 1, 0, data.opcode, this.mask), cb);
+        }
         else {
-            const frames = Math.floor(data.length / fragSize);
+            const last = Math.floor(data.length / fragSize);
 
             let drain;
-            for (let i=0; i<=frames; i++) {
-                const FIN = (i === frames) ? 1 : 0;
+            for (let i=0; i<=last; i++) {
+
+                const FIN = (i === last) ? 1 : 0;
                 const opcode = (i === 0) ? data.opcode : 0;
-                const callb = (i === frames) ? cb : undefined;
-                drain = this.socket.write(Frame( data.slice(i*fragSize, (i+1)*fragSize),
-                    FIN, 0, opcode, this.mask), callb);
+                const callb = (i === last) ? cb : undefined;
+
+                drain = this.socket.write(
+                    Frame(
+                        data.slice(i*fragSize, (i+1)*fragSize),
+                        FIN, 0, opcode, this.mask
+                    ),
+                    callb,
+                );
 
             }
             return drain;
@@ -372,7 +389,7 @@ Object.assign(WebSocket.prototype, EventEmitter.prototype, {
     },
 
     ping: function (data="", onPong, cb) { // cb returns on socket write
-        if (this.closed) return sendError("closed");
+        if (this.state !== CONNECTED) return sendError("closed");
         if (data.length > 125) return sendError("ping");
 
         if (onPong) this.once("pong", onPong);
@@ -380,26 +397,28 @@ Object.assign(WebSocket.prototype, EventEmitter.prototype, {
     },
 
     close: function (data="", statusCode=1000) {
-        if (this.state === 1) {
-            if (data.length > 123) return sendError("close");
+        if (this.state === CONNECTED) {
+            if (data.length > 123) return sendError("closing");
 
             const codeBuffer = Buffer.allocUnsafe(2);
             codeBuffer.writeUInt16BE(statusCode);
 
-            this.socket.write(Frame( Buffer.concat([codeBuffer, messagerize(data)]),
-                1, 0, 8, this.mask));
+            this.socket.write(Frame(
+                Buffer.concat([codeBuffer, messagerize(data)]),
+                1, 0, 8, this.mask,
+            ));
             this.statusCode = statusCode;
 
             if (statusCode === 1000) {
-                this.state = 2; // closing
+                this.state = CLOSING;
 
                 this.socket.closeTimer = setTimeout(
-                    () => {this.socket.end(); timeout(this);},
+                    () => { this.socket.end(); timeout(this); },
                     this.timeout
                 );
             }
             else {
-                this.state = 3; // like close received
+                this.state = DOWN;
                 this.socket.end();
                 this.socket.removeAllListeners("data");
                 timeout(this);
@@ -407,7 +426,9 @@ Object.assign(WebSocket.prototype, EventEmitter.prototype, {
 
             return true;
         }
-        else return false;
+        else {
+            return false;
+        }
     }
 
 });
@@ -449,10 +470,11 @@ function WebSocketServer(settings={}, onConnect=null) {
         let protos, protocol, protoHeader = "";
 
         if (settings.protocol && (protos = headers["sec-websocket-protocol"])) {
-            protocol = protos.split(", ").find(p=>settings.protocol.includes(p));
+            protocol = protos.split(", ").find(p => settings.protocol.includes(p));
             if (protocol) protoHeader = "Sec-WebSocket-Protocol: "+protocol+"\r\n";
         }
-                            // !! no host field is required -> no strict standard compliance
+
+        // !! no host field is required -> no strict standard compliance
         if (
             (!settings.path || request.url.pathname === settings.path) &&
             headers["upgrade"].toLowerCase() === "websocket" &&
@@ -464,12 +486,12 @@ function WebSocketServer(settings={}, onConnect=null) {
             (!settings.accept || settings.accept(request, protocol))
         ) {
             socket.write(
-                "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n"
-                +"Date: "+new Date().toUTCString()+"\r\nUpgrade: websocket\r\n"
-                +"Sec-WebSocket-Accept: "+sha1(key+wsGUID)+"\r\n"+protoHeader+"\r\n"
+                "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n"+
+                "Date: "+new Date().toUTCString()+"\r\nUpgrade: websocket\r\n"+
+                "Sec-WebSocket-Accept: "+sha1(key+wsGUID)+"\r\n"+protoHeader+"\r\n"
             );
 
-            socket.server = socket._server = null;
+            socket.server = null;
             socket.removeAllListeners("timeout");
             socket.setTimeout(0);
 
@@ -480,10 +502,10 @@ function WebSocketServer(settings={}, onConnect=null) {
 
             socket.once("close", () => {
                 server.clients.delete(client);
-                if (server.closed && !server.clients.size) server.emit("close");
+                if (server.closed && !server.clients.size) {
+                    setImmediate(() => server.emit("close")); // wait for close to bubble up
+                }
             });
-
-            socket._events.close.reverse(); // the preceding calls first
 
             client.on("message", msg => server.emit("message", msg, client));
             client.on("pong", data => server.emit("pong", data, client));
@@ -498,6 +520,7 @@ function WebSocketServer(settings={}, onConnect=null) {
         else socket.end("HTTP/1.1 400 Bad Request\r\nDate: "+new Date().toUTCString()+"\r\n\r\n");
     }
 
+    // make the server function behave like a constructed object
     Object.assign(server, WebSocketServer.prototype);
     server.constructor = WebSocketServer;
 
@@ -505,7 +528,7 @@ function WebSocketServer(settings={}, onConnect=null) {
     server.clients = new Set([]);
     server.closed = false;
 
-    // server.on("error", e=>{}); // ???? prevents blocking if unhandled
+    server.on("error", () => {}); // prevents crashing if unhandled
 
     if (onConnect) server.on("connect", onConnect);
 
@@ -517,11 +540,11 @@ function WebSocketServer(settings={}, onConnect=null) {
 Object.assign(WebSocketServer.prototype, EventEmitter.prototype, {
 
     broadcast: function (data, excludeClient) {
-        this.clients.forEach(cl=>cl.state===1 && cl!==excludeClient && cl.send(data));
+        this.clients.forEach(cl => cl.state === CONNECTED && cl !== excludeClient && cl.send(data));
     },
 
     disconnect: function (data, code) {
-        this.clients.forEach(cl=>cl.state===1 && cl.close(data, code));
+        this.clients.forEach(cl => cl.state === CONNECTED && cl.close(data, code));
     },
 
     open: function (data, code) {
@@ -530,6 +553,9 @@ Object.assign(WebSocketServer.prototype, EventEmitter.prototype, {
 
     close: function (data, code) {
         this.closed = true;
+        if (!this.clients.size) {
+            setImmediate(() => this.emit("close"));
+        }
     }
 
 });
@@ -543,19 +569,19 @@ function createServer(settings={}, onConnect=null) {
         settings = {}; // protocol, accept, timeout, maxMessage
     }
 
-    const tls = settings.tls;
-    delete settings.tls;
+    let tls;
+    ({tls, ...settings} = settings);
 
     // go
 
     const wsServer = WebSocketServer(settings, onConnect);
 
-    const httpServer = (tls ? require("https") : require("http")).createServer(tls);
+    const httpServer = ((tls) ? require("https") : require("http")).createServer(tls);
 
     httpServer.on("upgrade", wsServer);
     httpServer.timeout = 0;
     httpServer.on("error", error => wsServer.emit("error", error)); // handle errors !!!
-    wsServer[tls ? "https" : "http"] = httpServer;
+    wsServer[(tls) ? "https" : "http"] = httpServer;
 
     wsServer.listen = (...args) => {
         wsServer.open();
@@ -584,11 +610,13 @@ function connect(url, settings={}, callback) {
     const key = crypto.randomBytes(16).toString("base64");
 
     url = url_parse(url);
+    let get, protocol;
 
-    const [get, protocol] = {
-        "ws:": [require("http").get, "http:"],
-        "wss:": [require("https").get, "https:"]
-    }[url.protocol];
+    switch (url.protocol) {
+        case "ws:": get = require("http").get; protocol = "http:"; break;
+        case "wss:": get = require("https").get; protocol = "https:"; break;
+        default: throw Error(`protocol '${url.protocol}' is not supported`);
+    }
 
     const headers = Object.assign(settings.headers || {}, {
         "Upgrade": "websocket",
@@ -607,8 +635,8 @@ function connect(url, settings={}, callback) {
     var once = false;
 
     const abortTimer = setTimeout(
-        ()=>callB(null, "timeout"),
-        settings.timeout || defaultTimeout
+        () => callB(null, "timeout"),
+        settings.timeout || defaultTimeout,
     );
 
 
@@ -635,8 +663,8 @@ function connect(url, settings={}, callback) {
 
 
     // Events
-    request.once("response", r=>callB(null, r.statusCode+" "+r.statusMessage) );
-    request.once("error", e=>callB(null, e) );
+    request.once("response", r => callB(null, r.statusCode+" "+r.statusMessage) );
+    request.once("error", e => callB(null, e) );
 
 
     const match = sha1(key+wsGUID);
@@ -654,8 +682,10 @@ function connect(url, settings={}, callback) {
             headers["connection"].toLowerCase().includes("upgrade") &&
             headers["sec-websocket-accept"] === match &&
             !headers["sec-websocket-extensions"] &&
-            ( !(protocol = headers["sec-websocket-protocol"]) ||
-                settings.protocol && settings.protocol.includes(protocol) )
+            (
+                !(protocol = headers["sec-websocket-protocol"]) ||
+                settings.protocol && settings.protocol.includes(protocol)
+            )
         ) {
             delete socket._httpMessage;
 
